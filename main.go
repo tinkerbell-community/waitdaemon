@@ -36,6 +36,11 @@ const (
 	// when using nerdctl. The container must still use pid: host.
 	// Has no effect when using the Docker SDK.
 	nerdctlHostEnv = "NERDCTL_HOST"
+	// privilegedEnv overrides the Privileged flag on containers created by waitdaemon.
+	// When set to "true" or "1", all spawned containers run in privileged mode
+	// regardless of what the container inspect reports. This is useful when the
+	// runtime (e.g. nerdctl) does not reliably populate the Privileged field.
+	privilegedEnv = "PRIVILEGED"
 	// defaultNerdctlNamespace is the default namespace for nerdctl.
 	defaultNerdctlNamespace = "tinkerbell"
 	// phaseSecondFork is the value of phaseEnv that indicates that the second fork should be run.
@@ -52,6 +57,7 @@ const (
 
 func main() {
 	nsenter := nsenterEnabled()
+	privileged := privilegedOverride()
 
 	phase := os.Getenv(phaseEnv)
 	img := os.Getenv(imageEnv)
@@ -63,7 +69,7 @@ func main() {
 	}
 
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
-	logger.Info("starting waitdaemon", "phase", phase, "image", img, "waitTime", waitTime, "runtime", runtimePref, "nerdctlNamespace", nerdctlNS)
+	logger.Info("starting waitdaemon", "phase", phase, "image", img, "waitTime", waitTime, "runtime", runtimePref, "nerdctlNamespace", nerdctlNS, "privileged", privileged)
 
 	rt, err := runtime.Detect(runtimePref, dockerRuntime, nerdctlRuntime, nerdctlNS, nsenter)
 	if err != nil {
@@ -75,13 +81,13 @@ func main() {
 	switch phase {
 	case phaseSecondFork:
 		logger.Info("running second fork")
-		if err := secondFork(logger, rt, waitTime, img); err != nil {
+		if err := secondFork(logger, rt, waitTime, img, privileged); err != nil {
 			logger.Info("unable to run second fork image", "error", err)
 			statusCode = secondForkErrorCode
 		}
 	default:
 		logger.Info("running first fork")
-		if err := firstFork(logger, rt, img); err != nil {
+		if err := firstFork(logger, rt, img, privileged); err != nil {
 			logger.Info("unable to run first fork image", "error", err)
 			statusCode = firstForkErrorCode
 		}
@@ -104,7 +110,7 @@ func nerdctlRuntime(cli []string) (runtime.Runtime, error) {
 // firstFork pulls the user image and starts a container in the background from the image
 // that is currently being used by the container. This must return immediately after
 // creating the second container. Image pull failures are propagated back to the caller.
-func firstFork(logger *slog.Logger, rt runtime.Runtime, img string) error {
+func firstFork(logger *slog.Logger, rt runtime.Runtime, img string, privileged bool) error {
 	ctx := context.Background()
 
 	// Pull the user's image before creating the second container.
@@ -122,12 +128,15 @@ func firstFork(logger *slog.Logger, rt runtime.Runtime, img string) error {
 	if err != nil {
 		return err
 	}
+	if privileged {
+		info.Privileged = true
+	}
 	info.Env = append(info.Env, fmt.Sprintf("%v=%v", phaseEnv, phaseSecondFork))
 
 	return rt.RunContainer(ctx, info)
 }
 
-func secondFork(logger *slog.Logger, rt runtime.Runtime, waitTime string, img string) error {
+func secondFork(logger *slog.Logger, rt runtime.Runtime, waitTime string, img string, privileged bool) error {
 	ctx := context.Background()
 
 	// Image was already pulled in firstFork, so we just wait and run.
@@ -141,7 +150,7 @@ func secondFork(logger *slog.Logger, rt runtime.Runtime, waitTime string, img st
 	time.Sleep(t)
 
 	logger.Info("running user image", "image", img)
-	if err := runUserImage(ctx, rt, img); err != nil {
+	if err := runUserImage(ctx, rt, img, privileged); err != nil {
 		logger.Info("unable to run user defined image", "error", err)
 		return err
 	}
@@ -149,12 +158,15 @@ func secondFork(logger *slog.Logger, rt runtime.Runtime, waitTime string, img st
 	return nil
 }
 
-func runUserImage(ctx context.Context, rt runtime.Runtime, img string) error {
+func runUserImage(ctx context.Context, rt runtime.Runtime, img string, privileged bool) error {
 	info, err := rt.InspectSelf(ctx)
 	if err != nil {
 		return err
 	}
 	info.Image = img
+	if privileged {
+		info.Privileged = true
+	}
 
 	// Strip the waitdaemon binary from the command.
 	// The inspected Cmd is [/waitdaemon, user-cmd...], but the user image
@@ -176,6 +188,12 @@ func nsenterEnabled() bool {
 	if v == "" {
 		return true
 	}
+	return v == "true" || v == "1"
+}
+
+// privilegedOverride reports whether the PRIVILEGED env var is set to a truthy value.
+func privilegedOverride() bool {
+	v := strings.ToLower(os.Getenv(privilegedEnv))
 	return v == "true" || v == "1"
 }
 

@@ -30,7 +30,7 @@ bin/waitdaemon:
 
 .PHONY: build-image
 build-image: ## build the docker image
-	docker build -t ghcr.io/jacobweinstock/waitdaemon:latest .
+	docker build -t ghcr.io/tinkerbell-community/waitdaemon:latest .
 
 .PHONY: release-local
 release-local: tools ## Build and release all binaries and docker images locally
