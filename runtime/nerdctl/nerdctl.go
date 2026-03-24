@@ -16,14 +16,17 @@ import (
 
 // Nerdctl implements runtime.Runtime by shelling out to a container CLI.
 type Nerdctl struct {
-	cli []string
+	cli        []string
+	privileged bool
 }
 
 // New creates a Ctrctl runtime using the specified CLI command.
 // cli is the command prefix, e.g. []string{"nerdctl"} or []string{"docker"}.
-func New(cli []string) (*Nerdctl, error) {
+// When privileged is true, all containers created via RunContainer will
+// have the --privileged flag set regardless of the ContainerInfo value.
+func New(cli []string, privileged bool) (*Nerdctl, error) {
 	ctrctl.Cli = cli
-	return &Nerdctl{cli: cli}, nil
+	return &Nerdctl{cli: cli, privileged: privileged}, nil
 }
 
 // Ping verifies the CLI is available and responsive.
@@ -181,7 +184,7 @@ func (c *Nerdctl) RunContainer(_ context.Context, info runtime.ContainerInfo) er
 		Env:        info.Env,
 		Volume:     info.Binds,
 		Tty:        info.Tty,
-		Privileged: info.Privileged,
+		Privileged: info.Privileged || c.privileged,
 	}
 
 	if info.PidMode != "" {
